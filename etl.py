@@ -8,7 +8,20 @@ from psycopg2.extensions import register_adapter, AsIs
 from io import StringIO
 
 
-def copy_dataframe(cur, df, table_name, sep=',', null=False):
+def cd(cur, df, table_name, sep=',', null=False):
+    """
+    This procedure accepts a dataframe that needs to be copied to a 
+    postgres table.
+    It first saves the dataframe as a csv to the buffer and then the 
+    table is copied to the 
+    postgres table. 
+    
+    INPUTS: 
+    * cur the cursor variable
+    * df is the dataframe that needs to be converted to a csv 
+    * table_name - table into which the csv needs to be copied 
+    * sep = comma separated
+    """
     sio = StringIO()
     sio.write(df.to_csv(sep=sep, index=None, header=None))
     # Write the Pandas DataFrame as a csv to the buffer
@@ -20,11 +33,25 @@ def copy_dataframe(cur, df, table_name, sep=',', null=False):
 
 
 def process_song_file(cur, filepath):
+    """
+    This procedure processes a song file whose filepath has been provided 
+    as an arugment.
+    It extracts the song information in order to store it into the songs 
+    table.
+    Then it extracts the artist information in order to store it into the 
+    artists table.
+
+    INPUTS: 
+    * cur the cursor variable
+    * filepath the file path to the song file
+    """
     # open song file
     df = pd.read_json(filepath, lines=True)
     # insert song record
     song_data = list(
-        df.loc[0, ["song_id", "title", "artist_id", "year", "duration"]].values
+        df.loc[0, ["song_id", "title", "artist_id", "year", 
+                   
+                   "duration"]].values
     )
     cur.execute(song_table_insert, song_data)
 
@@ -49,6 +76,16 @@ def process_song_file(cur, filepath):
 
 
 def process_log_file(cur, filepath):
+    """
+    This procedure processes a log file whose filepath has been provided as an arugment.
+    It extracts and transforms the log information in order to store it into the time, user 
+    and songplay tables.
+    
+
+    INPUTS: 
+    * cur the cursor variable
+    * filepath the file path to the song file
+    """
     # open log file
     df = pd.read_json(filepath, lines=True)
 
@@ -66,10 +103,13 @@ def process_log_file(cur, filepath):
                      "week", "month", "year", "weekday")
     combined_dict = dict(zip(column_labels, time_data))
     time_df = pd.DataFrame(combined_dict)
-    # remove duplicates
-    time_df.drop_duplicates(subset='start_time', keep="first", inplace=True)
+    
+    for i, row in time_df.iterrows():
+        cur.execute(time_table_insert, list(row))
 
-    copy_dataframe(cur, time_df, "time")
+    
+
+    
 
     # load user table
     user_df = df[["userId", "firstName", "lastName", "gender", "level"]]
@@ -79,46 +119,41 @@ def process_log_file(cur, filepath):
     user_df = user_df.rename(columns=user_df_columns)
   
     
-    user_df.drop_duplicates(subset='user_id', keep="last", inplace=True)
-    
+    uder_df = user_df.drop_duplicates(subset='user_id')
+    for i, row in user_df.iterrows():
+        cur.execute(user_table_insert, row)
 
-    copy_dataframe(cur, user_df, "users")
+#     cd(cur, user_df, "users")
 
 
 
     # insert songplay records
-    data = []
     for index, row in df.iterrows():
+        # get song_id and artist_id from song and artist tables
+        cur.execute(song_select, (row.song, row.artist, round(row.length)))
+        result = cur.fetchone()
+        (song_id, artist_id) = (result if result else (None, None))
 
-        # get songid and artistid from song and artist tables
-        cur.execute(song_select, (row.song, row.artist, row.length))
-        results = cur.fetchone()
+        if song_id is None or artist_id is None:
+            continue
 
-        if results:
-            songid, artistid = results
-        else:
-            songid, artistid = None, None
         # insert songplay record
-        songplay_data = (
-            index,
-            row.ts,
-            row.userId,
-            row.level,
-            songid,
-            artistid,
-            row.sessionId,
-            row.location,
-            row.userAgent,
-        )
-        data.append(songplay_data)
-    songplay_columns = ["songplay_id", "start_time", "user_id", "level", "song_id", "artist_id", "session_id",
-                        "location", "user_agent"]
-    songplays_df = pd.DataFrame(data, columns=songplay_columns)
-    songplays_df.drop_duplicates(subset='songplay_id', keep="first", inplace=True)
-    copy_dataframe(cur, songplays_df, "songplays", sep="\t", null=True)
+        songplay_data = (round(row.ts / 1000.0), row.userId, row.level, song_id, \
+                         artist_id, row.sessionId, row.location, row.userAgent)
+        cur.execute(songplay_table_insert, songplay_data)
 
 
 def process_data(cur, conn, filepath, func):
+    """
+    This procedure extracts json files from their respective directory and passes
+    them to process_song_file and process_log_file functions for further 
+    processing.
+    
+
+    INPUTS: 
+    * cur the cursor variable
+    * filepath the file path to the song file
+    """
     # get all files matching extension from directory
     all_files = []
     for root, dirs, files in os.walk(filepath):
